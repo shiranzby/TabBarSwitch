@@ -1,16 +1,26 @@
-#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
-#NoTrayIcon
-ProcessSetPriority "High"
-DllCall("SetProcessDPIAware")
-SetWinDelay 0
+#NoTrayIcon                     ; 隐藏后台，如不需要则自行注释此行 (即: ;#NoTrayIcon)
+ProcessSetPriority "High"       ; 提高进程优先级，减少延迟
+DllCall("SetProcessDPIAware")   ; 禁用系统 DPI 缩放，确保坐标准确
+SetWinDelay 0                   ; 消除窗口操作的默认延时
 
 ; ==============================================================================
 ;  配置区域
 ; ==============================================================================
-TabAreaHeight := 120
-MaxQueueSize := 1
-KeyHoldDuration := 35 
+; --- 触发区域设置 ---
+TabAreaHeight := 120        ; 顶部触发区域高度 (像素)，在此区域内滚动滚轮生效
+
+; --- 任务队列设置 ---
+MaxQueueSize := 1           ; 最大任务队列长度，防止操作积压
+
+; --- 按键模拟参数 ---
+; 调整建议：Delay (按键间隔) 给浏览器反应时间确认修饰键；Duration (持续时间) 防止掉键
+KeyDelay := 5               ; 按键间隔 (毫秒)
+KeyDuration := 7            ; 按键按下持续时间 (毫秒)
+
+; --- 目标窗口设置 ---
+; Chromium 内核浏览器通用类名 (Chrome, Edge, Brave, Vivaldi, 360极速等)
 ChromiumWindowClasses := ["Chrome_WidgetWin_1", "Chrome_WidgetWin_0"]
 
 ; ==============================================================================
@@ -18,86 +28,95 @@ ChromiumWindowClasses := ["Chrome_WidgetWin_1", "Chrome_WidgetWin_0"]
 ; ==============================================================================
 CurrentTargetWindow := 0, TaskQueueCount := 0
 
-#HotIf IsMouseInBrowserTabArea()
-WheelUp::QueueTask("{Ctrl down}{Shift down}{Tab}{Shift up}{Ctrl up}")
-WheelDown::QueueTask("{Ctrl down}{Tab}{Ctrl up}")
-MButton::QueueTask("{Ctrl down}{Shift down}t{Shift up}{Ctrl up}")
+#HotIf IsMouseInBrowserTabArea() ; 仅当鼠标在浏览器标签栏区域时生效
+; 使用 {Blind} 避免干扰，显式拆分按键
+WheelUp::QueueTask("{Blind}{Ctrl down}{Shift down}{Tab}{Shift up}{Ctrl up}") ; 上滚：切换上一个标签
+WheelDown::QueueTask("{Blind}{Ctrl down}{Tab}{Ctrl up}")                     ; 下滚：切换下一个标签
+MButton::QueueTask("{Blind}{Ctrl down}{Shift down}t{Shift up}{Ctrl up}")     ; 中键：恢复关闭的标签
 #HotIf
 
 QueueTask(keySeq) {
     global TaskQueueCount
-    if (TaskQueueCount >= MaxQueueSize)
+    if (TaskQueueCount >= MaxQueueSize) ; 队列满则丢弃，防止卡顿
         return
     TaskQueueCount += 1
-    SetTimer () => ExecTask(keySeq), -1
+    SetTimer () => ExecTask(keySeq), -1 ; 异步执行任务
 }
 
 ExecTask(keySeq) {
-    global TaskQueueCount, CurrentTargetWindow, KeyHoldDuration, ChromiumWindowClasses
+    global TaskQueueCount, CurrentTargetWindow, KeyDelay, KeyDuration, ChromiumWindowClasses
     try {
-        origID := WinExist("A")
+        origID := WinExist("A") ; 获取当前激活窗口 ID
         
-        ; 1. 如果当前就在目标窗口，直接发
         if (origID = CurrentTargetWindow) {
-            Send keySeq
+            Send keySeq ; 如果当前就是目标浏览器，直接发送按键
         } else {
-            Critical "On"
+            Critical "On" ; 关键区，防止线程中断
             
-            ; 检查当前活动窗口是否也是浏览器？
             isForegroundBrowser := false
             try {
-                fgClass := WinGetClass("ahk_id " . origID)
-                if (HasValue(ChromiumWindowClasses, fgClass))
-                    isForegroundBrowser := true
+                if (origID) {
+                    fgClass := WinGetClass("ahk_id " . origID)
+                    if (HasValue(ChromiumWindowClasses, fgClass))
+                        isForegroundBrowser := true ; 判断前台是否也是浏览器
+                }
             }
 
             ; ============================================================
-            ; 唤醒阶段 (Wake Up)
-            ; ============================================================
-            ; 无论哪种情况，都必须先唤醒目标窗口
-            PostMessage 0x0086, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_NCACTIVATE
-            PostMessage 0x0006, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE
-            PostMessage 0x0007, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_SETFOCUS
-
-            ; 发送按键
-            SetKeyDelay 0, KeyHoldDuration
-            ControlSend keySeq, , "ahk_id " . CurrentTargetWindow
-
-            ; ============================================================
-            ; 清理阶段 (Cleanup) - 智能分支
+            ;  分支逻辑
             ; ============================================================
             
-            if (!isForegroundBrowser) {
-                ; 场景 A：Typora -> Chrome
-                ; 必须严格清理现场，否则 Typora 可能会失去焦点或无法输入
+            if (isForegroundBrowser) {
+                ; 场景 1: Chrome A -> Chrome B (强制激活恢复法)
+                ; 这种场景下，直接 ControlSend 可能会失效，需要伪造激活消息
+                PostMessage 0x0006, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Active)
+                
+                ; 【关键修改】增加按键间隔
+                SetKeyDelay KeyDelay, KeyDuration
+                ControlSend keySeq, , "ahk_id " . CurrentTargetWindow
+                
+                PostMessage 0x0006, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Inactive)
+                
+                if (origID)
+                    WinActivate "ahk_id " . origID ; 恢复原窗口激活状态
+            }
+            else {
+                ; 场景 2: 其他软件 -> Chrome (深度欺骗法)
+                ; 模拟完整的窗口激活流程，欺骗 Chrome 以为自己获得了焦点
+                PostMessage 0x0086, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_NCACTIVATE (Active)
+                PostMessage 0x0006, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Active)
+                PostMessage 0x0007, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_SETFOCUS
+                
+                ; 【关键修改】增加按键间隔
+                SetKeyDelay KeyDelay, KeyDuration
+                ControlSend keySeq, , "ahk_id " . CurrentTargetWindow
+                
                 if (origID) {
+                    ; 恢复现场：取消目标窗口焦点，恢复原窗口状态
                     PostMessage 0x0008, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_KILLFOCUS
                     PostMessage 0x0006, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Inactive)
                     PostMessage 0x0086, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_NCACTIVATE (Inactive)
+                    PostMessage 0x0086, 1, 0, , "ahk_id " . origID          ; 恢复原窗口标题栏激活态
                 }
-            } else {
-                ; 场景 B：Chrome A -> Chrome B
-                ; 【关键修复】不做任何清理！
-                ; 让 B 窗口保持“半醒”状态。
-                ; 因为前台是 A 窗口，A 会自然地保持系统级焦点。
-                ; 强行发 KILLFOCUS 给 B 会导致 B 在短时间内拒绝下一次输入，或者干扰 A 的输入流。
             }
             
             Critical "Off"
         }
     } finally {
         if (TaskQueueCount > 0)
-            TaskQueueCount -= 1
+            TaskQueueCount -= 1 ; 任务完成，减少计数
     }
 }
 
 IsMouseInBrowserTabArea() {
     global CurrentTargetWindow
-    CoordMode "Mouse", "Screen"
+    CoordMode "Mouse", "Screen" ; 使用屏幕绝对坐标
     MouseGetPos(&mx, &my, &hw)
+    ; 获取鼠标下的根窗口句柄 (处理子窗口情况)
     if !hw || !(root := DllCall("GetAncestor", "ptr", hw, "uint", 2, "ptr") || hw)
         return false
     
+    ; 检查窗口类名是否为支持的浏览器
     try if !HasValue(ChromiumWindowClasses, WinGetClass("ahk_id " . root))
         return false
         
@@ -105,8 +124,9 @@ IsMouseInBrowserTabArea() {
     catch
         return false
 
+    ; 计算鼠标相对于窗口顶部的 Y 坐标
     if ((relY := my - wy) >= 0 && relY <= TabAreaHeight) {
-        CurrentTargetWindow := root
+        CurrentTargetWindow := root ; 缓存目标窗口句柄
         return true
     }
     return false
