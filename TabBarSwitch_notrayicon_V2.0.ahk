@@ -1,14 +1,9 @@
-#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
-; #NoTrayIcon                     ; 隐藏后台，如不需要则自行注释此行 (即: ;#NoTrayIcon)
+#NoTrayIcon                     ; 隐藏后台，如不需要则自行注释此行 (即: ;#NoTrayIcon)
 ProcessSetPriority "High"       ; 提高进程优先级，减少延迟
 DllCall("SetProcessDPIAware")   ; 禁用系统 DPI 缩放，确保坐标准确
 SetWinDelay 0                   ; 消除窗口操作的默认延时
-
-; ==============================================================================
-;  TabBarSwitch V2.1
-;  更新日志: 使用 Ctrl+PageUp/PageDown 替代 Ctrl+Tab，彻底解决后台切换时的焦点框闪烁问题
-; ==============================================================================
 
 ; ==============================================================================
 ;  配置区域
@@ -35,9 +30,8 @@ CurrentTargetWindow := 0, TaskQueueCount := 0
 
 #HotIf IsMouseInBrowserTabArea() ; 仅当鼠标在浏览器标签栏区域时生效
 ; 使用 {Blind} 避免干扰，显式拆分按键
-; V2.1 修改: 使用 PgUp/PgDn 替代 Tab，避免触发焦点导航导致的黑色边框闪烁
-WheelUp::QueueTask("{Blind}{Ctrl down}{PgUp}{Ctrl up}")       ; 上滚：切换上一个标签 (Ctrl+PageUp)
-WheelDown::QueueTask("{Blind}{Ctrl down}{PgDn}{Ctrl up}")     ; 下滚：切换下一个标签 (Ctrl+PageDown)
+WheelUp::QueueTask("{Blind}{Ctrl down}{Shift down}{Tab}{Shift up}{Ctrl up}") ; 上滚：切换上一个标签
+WheelDown::QueueTask("{Blind}{Ctrl down}{Tab}{Ctrl up}")                     ; 下滚：切换下一个标签
 MButton::QueueTask("{Blind}{Ctrl down}{Shift down}t{Shift up}{Ctrl up}")     ; 中键：恢复关闭的标签
 #HotIf
 
