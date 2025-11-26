@@ -1,6 +1,6 @@
 ﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
-#NoTrayIcon                     ; 隐藏后台，如不需要则自行注释此行 (即: ;#NoTrayIcon)
+; #NoTrayIcon                     ; 隐藏后台，如不需要则自行注释此行 (即: ;#NoTrayIcon)
 ProcessSetPriority "High"       ; 提高进程优先级，减少延迟
 DllCall("SetProcessDPIAware")   ; 禁用系统 DPI 缩放，确保坐标准确
 SetWinDelay 0                   ; 消除窗口操作的默认延时
