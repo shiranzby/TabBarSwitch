@@ -6,8 +6,11 @@ DllCall("SetProcessDPIAware")   ; 禁用系统 DPI 缩放，确保坐标准确
 SetWinDelay 0                   ; 消除窗口操作的默认延时
 
 ; ==============================================================================
-;  TabBarSwitch V2.1 (No Tray Icon)
-;  更新日志: 使用 Ctrl+PageUp/PageDown 替代 Ctrl+Tab，彻底解决后台切换时的焦点框闪烁问题
+;  TabBarSwitch v2.2 (No Tray Icon)
+;  更新日志: 
+;  1. 采用 AttachThreadInput 技术统一了后台控制逻辑，不再区分前台是否为浏览器。
+;  2. 极大地提升了 Chrome 多窗口之间切换的流畅度，消除了旧版本中的焦点抢占问题。
+;  3. 保持了 v2.1 的 Ctrl+PgUp/PgDn 映射，确保无视觉闪烁。
 ; ==============================================================================
 
 ; ==============================================================================
@@ -35,7 +38,6 @@ CurrentTargetWindow := 0, TaskQueueCount := 0
 
 #HotIf IsMouseInBrowserTabArea() ; 仅当鼠标在浏览器标签栏区域时生效
 ; 使用 {Blind} 避免干扰，显式拆分按键
-; V2.1 修改: 使用 PgUp/PgDn 替代 Tab，避免触发焦点导航导致的黑色边框闪烁
 WheelUp::QueueTask("{Blind}{Ctrl down}{PgUp}{Ctrl up}")       ; 上滚：切换上一个标签 (Ctrl+PageUp)
 WheelDown::QueueTask("{Blind}{Ctrl down}{PgDn}{Ctrl up}")     ; 下滚：切换下一个标签 (Ctrl+PageDown)
 MButton::QueueTask("{Blind}{Ctrl down}{Shift down}t{Shift up}{Ctrl up}")     ; 中键：恢复关闭的标签
@@ -59,51 +61,28 @@ ExecTask(keySeq) {
         } else {
             Critical "On" ; 关键区，防止线程中断
             
-            isForegroundBrowser := false
-            try {
-                if (origID) {
-                    fgClass := WinGetClass("ahk_id " . origID)
-                    if (HasValue(ChromiumWindowClasses, fgClass))
-                        isForegroundBrowser := true ; 判断前台是否也是浏览器
-                }
-            }
-
-            ; ============================================================
-            ;  分支逻辑
-            ; ============================================================
+            ; 获取目标窗口的线程 ID
+            targetThreadId := DllCall("GetWindowThreadProcessId", "Ptr", CurrentTargetWindow, "Ptr", 0, "UInt")
+            ; 获取当前脚本的线程 ID
+            currentThreadId := DllCall("GetCurrentThreadId", "UInt")
             
-            if (isForegroundBrowser) {
-                ; 场景 1: Chrome A -> Chrome B (强制激活恢复法)
-                ; 这种场景下，直接 ControlSend 可能会失效，需要伪造激活消息
-                PostMessage 0x0006, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Active)
+            if (targetThreadId != currentThreadId) {
+                ; 连接线程输入队列 (AttachThreadInput)
+                ; 这使得脚本线程可以直接向目标窗口线程发送输入，就像它们属于同一个程序一样
+                DllCall("AttachThreadInput", "UInt", currentThreadId, "UInt", targetThreadId, "Int", 1)
                 
-                ; 【关键修改】增加按键间隔
+                ; 尝试给予焦点，确保按键能被接收
+                ; 由于已经 Attach，ControlFocus 不会强制抢占前台窗口的激活状态
+                try ControlFocus "Chrome_RenderWidgetHostHWND1", "ahk_id " . CurrentTargetWindow
+                
                 SetKeyDelay KeyDelay, KeyDuration
                 ControlSend keySeq, , "ahk_id " . CurrentTargetWindow
                 
-                PostMessage 0x0006, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Inactive)
-                
-                if (origID)
-                    WinActivate "ahk_id " . origID ; 恢复原窗口激活状态
-            }
-            else {
-                ; 场景 2: 其他软件 -> Chrome (深度欺骗法)
-                ; 模拟完整的窗口激活流程，欺骗 Chrome 以为自己获得了焦点
-                PostMessage 0x0086, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_NCACTIVATE (Active)
-                PostMessage 0x0006, 1, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Active)
-                PostMessage 0x0007, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_SETFOCUS
-                
-                ; 【关键修改】增加按键间隔
-                SetKeyDelay KeyDelay, KeyDuration
+                ; 断开连接
+                DllCall("AttachThreadInput", "UInt", currentThreadId, "UInt", targetThreadId, "Int", 0)
+            } else {
+                ; 如果是同一线程 (极少见)，直接发送
                 ControlSend keySeq, , "ahk_id " . CurrentTargetWindow
-                
-                if (origID) {
-                    ; 恢复现场：取消目标窗口焦点，恢复原窗口状态
-                    PostMessage 0x0008, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_KILLFOCUS
-                    PostMessage 0x0006, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_ACTIVATE (Inactive)
-                    PostMessage 0x0086, 0, 0, , "ahk_id " . CurrentTargetWindow ; WM_NCACTIVATE (Inactive)
-                    PostMessage 0x0086, 1, 0, , "ahk_id " . origID          ; 恢复原窗口标题栏激活态
-                }
             }
             
             Critical "Off"
